@@ -56,7 +56,7 @@ export default function ImproveResumeScreen({ navigation }: ImproveResumeScreenP
     setIsImproving(true);
     try {
       const baseUrl = getApiUrl();
-      const response = await fetch(`${baseUrl}api/resume/improve`, {
+      const response = await fetch(`${baseUrl}/api/resume/improve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

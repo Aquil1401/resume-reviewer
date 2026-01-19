@@ -97,7 +97,7 @@ export default function ScanScreen({ navigation }: ScanScreenProps) {
       } as any);
 
       const baseUrl = getApiUrl();
-      const response = await fetch(`${baseUrl}api/resume/analyze`, {
+      const response = await fetch(`${baseUrl}/api/resume/analyze`, {
         method: 'POST',
         body: formData,
         headers: {
@@ -110,7 +110,7 @@ export default function ScanScreen({ navigation }: ScanScreenProps) {
       }
 
       const analysis: ResumeAnalysis = await response.json();
-      
+
       await saveCurrentResume(analysis);
       await addScanToHistory({
         id: analysis.id,

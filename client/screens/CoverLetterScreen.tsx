@@ -60,7 +60,7 @@ export default function CoverLetterScreen({ navigation }: CoverLetterScreenProps
     setIsGenerating(true);
     try {
       const baseUrl = getApiUrl();
-      const response = await fetch(`${baseUrl}api/resume/cover-letter`, {
+      const response = await fetch(`${baseUrl}/api/resume/cover-letter`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

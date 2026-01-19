@@ -1,17 +1,67 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import multer from "multer";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const upload = multer({ 
+const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } 
+  limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-});
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY environment variable is required");
+}
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+/**
+ * Creates a Gemini model instance configured for JSON responses
+ * Using gemini-2.5-flash
+ */
+function getGeminiModel() {
+  return genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    generationConfig: {
+      responseMimeType: "application/json"
+    }
+  });
+}
+
+/**
+ * Retry helper with exponential backoff for handling API overload
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  initialDelay = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+
+      // Don't retry on non-503 errors
+      if (error.status !== 503 && error.status !== 429) {
+        throw error;
+      }
+
+      // Don't retry on last attempt
+      if (attempt === maxRetries) {
+        throw error;
+      }
+
+      // Exponential backoff: 1s, 2s, 4s
+      const delay = initialDelay * Math.pow(2, attempt);
+      console.log(`API overloaded (${error.status}), retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -33,13 +83,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const fileContent = await extractTextFromFile(req.file.buffer, req.file.mimetype);
-      
-      const response = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert ATS (Applicant Tracking System) resume analyzer. Analyze the provided resume and return a detailed JSON analysis. Be constructive and helpful in your feedback.
+
+      const model = getGeminiModel();
+
+      const prompt = `You are an expert ATS (Applicant Tracking System) resume analyzer. Analyze the provided resume and return a detailed JSON analysis. Be constructive and helpful in your feedback.
 
 Return ONLY valid JSON in this exact format:
 {
@@ -53,17 +100,15 @@ Return ONLY valid JSON in this exact format:
   },
   "missingItems": [<string>],
   "suggestions": [<string>]
-}`
-          },
-          {
-            role: "user",
-            content: `Analyze this resume for ATS compatibility:\n\n${fileContent}`
-          }
-        ],
-        max_completion_tokens: 2048,
-      });
+}
 
-      const content = response.choices[0]?.message?.content || '{}';
+Analyze this resume for ATS compatibility:
+
+${fileContent}`;
+
+      const result = await model.generateContent(prompt);
+      const content = result.response.text();
+
       let analysis;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -83,7 +128,7 @@ Return ONLY valid JSON in this exact format:
         };
       }
 
-      const result = {
+      const analysisResult = {
         id: generateId(),
         fileName: req.file.originalname,
         fileSize: req.file.size,
@@ -92,7 +137,7 @@ Return ONLY valid JSON in this exact format:
         ...analysis,
       };
 
-      res.json(result);
+      res.json(analysisResult);
     } catch (error) {
       console.error("Error analyzing resume:", error);
       res.status(500).json({ error: "Failed to analyze resume" });
@@ -107,12 +152,9 @@ Return ONLY valid JSON in this exact format:
         return res.status(400).json({ error: "Resume content and job description are required" });
       }
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert job matching specialist. Compare the resume with the job description and provide a detailed match analysis. Be helpful and constructive.
+      const model = getGeminiModel();
+
+      const prompt = `You are an expert job matching specialist. Compare the resume with the job description and provide a detailed match analysis. Be helpful and constructive.
 
 Return ONLY valid JSON in this exact format:
 {
@@ -121,23 +163,23 @@ Return ONLY valid JSON in this exact format:
   "missingSkills": [<string>],
   "keywordGaps": [<string>],
   "recommendations": [<string>]
-}`
-          },
-          {
-            role: "user",
-            content: `Resume:\n${resumeContent}\n\nJob Description:\n${jobDescription}`
-          }
-        ],
-        max_completion_tokens: 2048,
-      });
+}
 
-      const content = response.choices[0]?.message?.content || '{}';
-      let result;
+Resume:
+${resumeContent}
+
+Job Description:
+${jobDescription}`;
+
+      const result = await model.generateContent(prompt);
+      const content = result.response.text();
+
+      let matchResult;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
-        result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
+        matchResult = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
       } catch {
-        result = {
+        matchResult = {
           matchPercentage: 60,
           matchedSkills: ["Communication", "Problem Solving", "Team Collaboration"],
           missingSkills: ["Specific technical skill from JD"],
@@ -146,7 +188,7 @@ Return ONLY valid JSON in this exact format:
         };
       }
 
-      res.json(result);
+      res.json(matchResult);
     } catch (error) {
       console.error("Error matching JD:", error);
       res.status(500).json({ error: "Failed to match job description" });
@@ -161,12 +203,9 @@ Return ONLY valid JSON in this exact format:
         return res.status(400).json({ error: "Resume content is required" });
       }
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert resume writer. Improve the resume bullet points to be more ATS-friendly while keeping all information accurate and honest. Use action verbs and quantify achievements where possible.
+      const model = getGeminiModel();
+
+      const prompt = `You are an expert resume writer. Improve the resume bullet points to be more ATS-friendly while keeping all information accurate and honest. Use action verbs and quantify achievements where possible.
 
 Return ONLY valid JSON in this exact format:
 {
@@ -176,23 +215,22 @@ Return ONLY valid JSON in this exact format:
   "downloadReady": true
 }
 
-Select 3-5 key bullet points from the resume to improve.`
-          },
-          {
-            role: "user",
-            content: `Resume to improve:\n${resumeContent}\n\nPrevious suggestions: ${JSON.stringify(suggestions || [])}`
-          }
-        ],
-        max_completion_tokens: 2048,
-      });
+Select 3-5 key bullet points from the resume to improve.
 
-      const content = response.choices[0]?.message?.content || '{}';
-      let result;
+Resume to improve:
+${resumeContent}
+
+Previous suggestions: ${JSON.stringify(suggestions || [])}`;
+
+      const result = await model.generateContent(prompt);
+      const content = result.response.text();
+
+      let improveResult;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
-        result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
+        improveResult = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
       } catch {
-        result = {
+        improveResult = {
           originalPoints: [
             "Worked on various projects",
             "Helped team achieve goals",
@@ -208,7 +246,7 @@ Select 3-5 key bullet points from the resume to improve.`
         };
       }
 
-      res.json(result);
+      res.json(improveResult);
     } catch (error) {
       console.error("Error improving resume:", error);
       res.status(500).json({ error: "Failed to improve resume" });
@@ -223,12 +261,9 @@ Select 3-5 key bullet points from the resume to improve.`
         return res.status(400).json({ error: "Resume content is required" });
       }
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert interview coach. Generate personalized interview questions based on the resume and job description. Include HR, technical, and situational questions.
+      const model = getGeminiModel();
+
+      const prompt = `You are an expert interview coach. Generate personalized interview questions based on the resume and job description. Include HR, technical, and situational questions.
 
 Return ONLY valid JSON in this exact format:
 {
@@ -239,23 +274,22 @@ Return ONLY valid JSON in this exact format:
   ]
 }
 
-Generate at least 3 questions per category (9+ total questions).`
-          },
-          {
-            role: "user",
-            content: `Resume:\n${resumeContent}\n\n${jobDescription ? `Job Description:\n${jobDescription}` : ''}`
-          }
-        ],
-        max_completion_tokens: 2048,
-      });
+Generate at least 3 questions per category (9+ total questions).
 
-      const content = response.choices[0]?.message?.content || '{}';
-      let result;
+Resume:
+${resumeContent}
+
+${jobDescription ? `Job Description:\n${jobDescription}` : ''}`;
+
+      const result = await model.generateContent(prompt);
+      const content = result.response.text();
+
+      let questionsResult;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
-        result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
+        questionsResult = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
       } catch {
-        result = {
+        questionsResult = {
           questions: [
             { category: "hr", question: "Tell me about yourself and your career journey.", hint: "Focus on relevant experience and career highlights" },
             { category: "hr", question: "Why are you interested in this position?", hint: "Connect your skills to the job requirements" },
@@ -270,7 +304,7 @@ Generate at least 3 questions per category (9+ total questions).`
         };
       }
 
-      res.json(result);
+      res.json(questionsResult);
     } catch (error) {
       console.error("Error generating questions:", error);
       res.status(500).json({ error: "Failed to generate interview questions" });
@@ -285,12 +319,9 @@ Generate at least 3 questions per category (9+ total questions).`
         return res.status(400).json({ error: "Job description is required" });
       }
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert cover letter writer. Write a professional, personalized cover letter based on the resume and job description. The letter should:
+      const model = getGeminiModel();
+
+      const prompt = `You are an expert cover letter writer. Write a professional, personalized cover letter based on the resume and job description. The letter should:
 - Be professional but personable
 - Highlight relevant experience and skills
 - Show enthusiasm for the role
@@ -301,23 +332,20 @@ Return ONLY valid JSON in this exact format:
 {
   "content": "<full cover letter text>",
   "generatedAt": "<ISO date string>"
-}`
-          },
-          {
-            role: "user",
-            content: `${resumeContent ? `Resume:\n${resumeContent}\n\n` : ''}Job Description:\n${jobDescription}`
-          }
-        ],
-        max_completion_tokens: 2048,
-      });
+}
 
-      const content = response.choices[0]?.message?.content || '{}';
-      let result;
+${resumeContent ? `Resume:\n${resumeContent}\n\n` : ''}Job Description:
+${jobDescription}`;
+
+      const result = await model.generateContent(prompt);
+      const content = result.response.text();
+
+      let letterResult;
       try {
         const jsonMatch = content.match(/\{[\s\S]*\}/);
-        result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
+        letterResult = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content);
       } catch {
-        result = {
+        letterResult = {
           content: `Dear Hiring Manager,
 
 I am writing to express my strong interest in the position advertised. With my background and skills, I am confident I would be a valuable addition to your team.
@@ -333,11 +361,11 @@ Best regards`,
         };
       }
 
-      if (!result.generatedAt) {
-        result.generatedAt = new Date().toISOString();
+      if (!letterResult.generatedAt) {
+        letterResult.generatedAt = new Date().toISOString();
       }
 
-      res.json(result);
+      res.json(letterResult);
     } catch (error) {
       console.error("Error generating cover letter:", error);
       res.status(500).json({ error: "Failed to generate cover letter" });

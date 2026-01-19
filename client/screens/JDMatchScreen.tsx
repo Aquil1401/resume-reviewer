@@ -59,9 +59,9 @@ export default function JDMatchScreen({ navigation }: JDMatchScreenProps) {
     setIsAnalyzing(true);
     try {
       await saveLastJD(jobDescription);
-      
+
       const baseUrl = getApiUrl();
-      const response = await fetch(`${baseUrl}api/resume/match-jd`, {
+      const response = await fetch(`${baseUrl}/api/resume/match-jd`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
