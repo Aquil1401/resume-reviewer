@@ -30,12 +30,16 @@ Since your app depends on the backend for AI (Gemini), you must host the server 
 
 Now tell your app to use the *online* server instead of localhost.
 
-1. Open `.env` locally.
-2. Change `EXPO_PUBLIC_API_URL` to your new Vercel URL:
-   ```env
-   EXPO_PUBLIC_API_URL=https://resume-reviewer.vercel.app
+1. Open `eas.json` locally.
+2. In the `preview` -> `env` section, replace the placeholder with your Vercel URL:
+   ```json
+   "env": {
+     "EXPO_PUBLIC_API_URL": "https://your-project.vercel.app"
+   }
    ```
    *(Make sure there is NO trailing slash `/` at the end)*
+
+**Pro Tip:** This allows you to keep `EXPO_PUBLIC_API_URL` pointing to `localhost` in your local `.env` file (for development), while the APK build automatically uses the Vercel URL!
 
 ---
 
