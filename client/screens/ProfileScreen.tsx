@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { supabase } from '@/lib/supabase';
 import { View, StyleSheet, Pressable, Alert, Image } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -66,6 +67,24 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           },
         },
+      ]
+    );
+  };
+
+  const handleLogout = () => {
+    Alert.alert(
+      "Sign Out",
+      "Are you sure you want to sign out?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Sign Out",
+          style: "destructive",
+          onPress: async () => {
+            const { error } = await supabase.auth.signOut();
+            if (error) Alert.alert("Error", error.message);
+          }
+        }
       ]
     );
   };
@@ -209,6 +228,22 @@ export default function ProfileScreen({ navigation }: ProfileScreenProps) {
           <ThemedText type="small" style={{ color: theme.textSecondary }}>
             Clear scan history and settings
           </ThemedText>
+        </View>
+        <Feather name="chevron-right" size={20} color={theme.textSecondary} />
+      </Pressable>
+
+      <Pressable
+        onPress={handleLogout}
+        style={({ pressed }) => [
+          styles.settingRow,
+          { backgroundColor: theme.backgroundDefault, opacity: pressed ? 0.8 : 1 },
+        ]}
+      >
+        <View style={[styles.settingIcon, { backgroundColor: `${theme.textSecondary}15` }]}>
+          <Feather name="log-out" size={18} color={theme.text} />
+        </View>
+        <View style={styles.settingContent}>
+          <ThemedText type="h4">Sign Out</ThemedText>
         </View>
         <Feather name="chevron-right" size={20} color={theme.textSecondary} />
       </Pressable>
